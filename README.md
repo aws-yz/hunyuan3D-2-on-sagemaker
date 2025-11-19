@@ -427,5 +427,3 @@ def deploy_model(image_uri):
 本项目遵循 Hunyuan3D-2 的原始许可证条款。请参考官方仓库了解详细的许可证信息。
 
 ---
-
-**🎉 部署成功！现在可以通过 SageMaker 端点生成高质量的 3D 模型了！**
