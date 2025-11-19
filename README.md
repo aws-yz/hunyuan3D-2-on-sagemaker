@@ -87,6 +87,11 @@ aws configure
 - `ecr:UploadLayerPart`
 - `ecr:CompleteLayerUpload`
 
+**S3 权限**：
+- `s3:CreateBucket`
+- `s3:PutObject`
+- `s3:GetObject`
+
 **CodeBuild 权限**：
 - `codebuild:CreateProject`
 - `codebuild:StartBuild`
@@ -111,14 +116,16 @@ aws configure
 - **存储空间**：至少 20GB 可用空间用于 Docker 镜像构建
 - **网络**：稳定的网络连接用于下载模型权重（约 10GB）
 
-### 1. 克隆仓库
-
+#### SageMaker 执行角色
+创建或确保存在 SageMaker 执行角色：
 ```bash
-git clone https://github.com/aws-yz/hunyuan3D-2-on-sagemaker.git
-cd hunyuan3D-2-on-sagemaker
+# 检查现有角色
+aws iam get-role --role-name SageMakerExecutionRole
+
+# 如果不存在，脚本会自动创建
 ```
 
-### 2. 环境准备
+### 1. 环境准备
 
 ```bash
 # 创建虚拟环境
@@ -129,13 +136,13 @@ source hunyuan3d-env/bin/activate
 pip install boto3 sagemaker pillow
 ```
 
-### 3. 一键部署
+### 2. 一键部署
 
 ```bash
 python build_and_deploy.py
 ```
 
-### 4. 功能测试
+### 3. 功能测试
 
 ```bash
 # 快速功能测试
@@ -154,66 +161,59 @@ python generate_textured_3d.py
 | -------- | ------------- | --------------------------- |
 | 实例类型 | ml.g5.2xlarge | 24GB GPU 内存，适合大型模型 |
 | 模型大小 | ~9.7GB        | 包含完整 PyTorch 推理环境   |
-| 加载时间 | 5-10 分钟     | 大型模型初始化时间          |
+| 构建时间 | 8-15 分钟     | CodeBuild 远程构建时间      |
+| 端点启动 | 7-10 分钟     | 端点创建到 InService 时间   |
+| 模型加载 | 3-8 分钟      | 模型初始化和权重加载时间    |
 | 推理速度 | 30-60 秒      | 取决于步数和纹理设置        |
 
-## 🔧 部署要点
+## 🔍 故障排除
 
-### 1. 系统依赖配置
+### 常见问题
 
-**关键 OpenGL 依赖**：
+1. **推理错误**
 
-```dockerfile
-RUN apt-get update && apt-get install -y \
-    git \
-    ninja-build \
-    libgl1-mesa-glx \
-    libglu1-mesa \
-    libopengl0 \          # 核心 OpenGL 库
-    libglx0 \             # GLX 扩展
-    libxrender1 \         # X11 渲染支持
-    libxext6 \
-    libx11-6 \
-    && rm -rf /var/lib/apt/lists/*
+   ```
+   zero-size array to reduction operation minimum which has no identity
+   ```
+
+   **解决**：检查输入图像格式，确保图像尺寸合理（建议 ≥ 256x256）
+
+2. **模型加载超时**
+
+   ```
+   模型加载超时，已重试60次
+   ```
+
+   **解决**：检查实例资源，模型加载通常需要 5-10 分钟
+
+3. **OpenGL 错误**
+
+   ```
+   libOpenGL.so.0: cannot open shared object file
+   ```
+
+   **解决**：确保安装完整的 OpenGL 依赖包
+
+4. **端点配置错误**
+   ```
+   Could not find endpoint configuration
+   ```
+   **解决**：使用修复后的 `build_and_deploy.py` 自动处理
+
+### 调试工具
+
+**查看端点日志**：
+
+```bash
+aws logs get-log-events \
+  --log-group-name /aws/sagemaker/Endpoints/hunyuan3d-custom-endpoint \
+  --log-stream-name "AllTraffic/i-xxxxx"
 ```
 
-### 2. 模型加载策略
+**检查端点状态**：
 
-**异步加载模式**：
-
-```python
-# 后台线程加载模型，避免阻塞服务启动
-def load_model_async():
-    model_handler.load_models()  # 注意方法名
-
-model_thread = threading.Thread(target=load_model_async)
-model_thread.daemon = True
-model_thread.start()
-```
-
-### 3. 推理参数配置
-
-**基础 3D 生成**：
-
-```json
-{
-  "image": "base64_encoded_image",
-  "texture": false,
-  "num_inference_steps": 5,
-  "seed": 42,
-  "guidance_scale": 7.5
-}
-```
-
-**带纹理生成**：
-
-```json
-{
-  "image": "base64_encoded_image",
-  "texture": true,
-  "num_inference_steps": 8,
-  "face_count": 30000
-}
+```bash
+aws sagemaker describe-endpoint --endpoint-name hunyuan3d-custom-endpoint
 ```
 
 ## 📋 API 参考
@@ -275,46 +275,95 @@ if result['status'] == 'completed':
         f.write(model_data)
 ```
 
-## 🔍 故障排除
+## 🔧 部署要点
 
-### 常见问题
+### 1. 系统依赖配置
 
-1. **OpenGL 错误**
+**关键 OpenGL 依赖**：
 
-   ```
-   libOpenGL.so.0: cannot open shared object file
-   ```
-
-   **解决**：确保安装完整的 OpenGL 依赖包
-
-2. **模型加载失败**
-
-   ```
-   'ModelHandler' object has no attribute 'load_model'
-   ```
-
-   **解决**：检查方法名，应为 `load_models()`
-
-3. **端点配置错误**
-   ```
-   Could not find endpoint configuration
-   ```
-   **解决**：使用修复后的 `build_and_deploy.py` 自动处理
-
-### 调试工具
-
-**查看端点日志**：
-
-```bash
-aws logs get-log-events \
-  --log-group-name /aws/sagemaker/Endpoints/hunyuan3d-custom-endpoint \
-  --log-stream-name "AllTraffic/i-xxxxx"
+```dockerfile
+RUN apt-get update && apt-get install -y \
+    git \
+    ninja-build \
+    libgl1-mesa-glx \
+    libglu1-mesa \
+    libopengl0 \          # 核心 OpenGL 库
+    libglx0 \             # GLX 扩展
+    libxrender1 \         # X11 渲染支持
+    libxext6 \
+    libx11-6 \
+    && rm -rf /var/lib/apt/lists/*
 ```
 
-**检查端点状态**：
+### 2. 模型加载策略
 
-```bash
-aws sagemaker describe-endpoint --endpoint-name hunyuan3d-custom-endpoint
+**异步加载模式**：
+
+```python
+# 后台线程加载模型，避免阻塞服务启动
+def load_model_async():
+    model_handler.load_models()  # 注意方法名
+
+model_thread = threading.Thread(target=load_model_async)
+model_thread.daemon = True
+model_thread.start()
+```
+
+**状态检查机制**：
+
+```python
+if not self.model_loaded:
+    return {
+        'error': 'Model not loaded yet, please wait',
+        'status': 'loading'
+    }
+```
+
+### 3. 推理参数配置
+
+**基础 3D 生成**：
+
+```json
+{
+  "image": "base64_encoded_image",
+  "texture": false,
+  "num_inference_steps": 5,
+  "seed": 42,
+  "guidance_scale": 7.5
+}
+```
+
+**带纹理生成**：
+
+```json
+{
+  "image": "base64_encoded_image",
+  "texture": true,
+  "num_inference_steps": 8,
+  "face_count": 30000
+}
+```
+
+### 4. 部署流程
+
+- **端点配置管理**：自动创建新配置并更新端点
+- **错误恢复机制**：检测损坏状态并自动重建
+- **模型版本控制**：每次构建创建新模型定义
+
+```python
+# 部署逻辑
+def deploy_model(image_uri):
+    # 1. 创建新模型
+    model.create()
+
+    # 2. 创建新端点配置
+    create_endpoint_config(config_name, model_name)
+
+    # 3. 更新或创建端点
+    if endpoint_exists:
+        update_endpoint(endpoint_name, config_name)
+    else:
+        create_endpoint(endpoint_name, config_name)
 ```
 
 ## 📚 技术细节
