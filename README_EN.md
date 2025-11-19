@@ -47,6 +47,234 @@ According to official evaluations, Hunyuan3D 2.0 leads in key metrics:
 └── generate_textured_3d.py # Textured 3D model generation example
 ```
 
+## 🚀 Quick Deployment
+
+### Prerequisites
+
+#### AWS Environment Configuration
+```bash
+# 1. Install AWS CLI
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+
+# 2. Configure AWS credentials
+aws configure
+# Enter Access Key ID, Secret Access Key, Region (recommend us-east-1)
+```
+
+#### Required AWS Permissions
+Ensure your AWS account has the following permissions:
+
+**SageMaker Permissions**:
+- `sagemaker:CreateModel`
+- `sagemaker:CreateEndpointConfig`
+- `sagemaker:CreateEndpoint`
+- `sagemaker:UpdateEndpoint`
+- `sagemaker:DescribeEndpoint`
+- `sagemaker:DeleteEndpoint`
+- `sagemaker:DeleteEndpointConfig`
+- `sagemaker:DeleteModel`
+
+**ECR Permissions**:
+- `ecr:GetAuthorizationToken`
+- `ecr:BatchCheckLayerAvailability`
+- `ecr:GetDownloadUrlForLayer`
+- `ecr:BatchGetImage`
+- `ecr:CreateRepository`
+- `ecr:PutImage`
+- `ecr:InitiateLayerUpload`
+- `ecr:UploadLayerPart`
+- `ecr:CompleteLayerUpload`
+
+**S3 Permissions**:
+- `s3:CreateBucket`
+- `s3:PutObject`
+- `s3:GetObject`
+
+**CodeBuild Permissions**:
+- `codebuild:CreateProject`
+- `codebuild:StartBuild`
+- `codebuild:BatchGetBuilds`
+- `codebuild:BatchGetProjects`
+- `codebuild:ListBuilds`
+- `codebuild:ListProjects`
+
+**IAM Permissions**:
+- `iam:GetRole`
+- `iam:PassRole` (for SageMaker execution role)
+
+**CloudWatch Logs Permissions**:
+- `logs:CreateLogGroup`
+- `logs:CreateLogStream`
+- `logs:PutLogEvents`
+- `logs:DescribeLogGroups`
+- `logs:DescribeLogStreams`
+
+#### Resource Quota Requirements
+- **GPU Instance Quota**: Ensure `ml.g5.2xlarge` instance quota ≥ 1
+- **Storage Space**: At least 20GB available space for Docker image building
+- **Network**: Stable network connection for downloading model weights (~10GB)
+
+#### SageMaker Execution Role
+Create or ensure SageMaker execution role exists:
+```bash
+# Check existing role
+aws iam get-role --role-name SageMakerExecutionRole
+
+# If not exists, script will create automatically
+```
+
+### 1. Environment Setup
+
+```bash
+# Create virtual environment
+python3 -m venv hunyuan3d-env
+source hunyuan3d-env/bin/activate
+
+# Install dependencies
+pip install boto3 sagemaker pillow
+```
+
+### 2. One-Click Deployment
+
+```bash
+python build_and_deploy.py
+```
+
+### 3. Functionality Testing
+
+```bash
+# Quick functionality test
+python test_endpoint.py
+
+# Generate basic 3D shape
+python generate_3d_shape.py
+
+# Generate textured 3D model
+python generate_textured_3d.py
+```
+
+## 📊 Performance Metrics
+
+| Configuration   | Specification | Description                                |
+| --------------- | ------------- | ------------------------------------------ |
+| Instance Type   | ml.g5.2xlarge | 24GB GPU memory, suitable for large models |
+| Model Size      | ~9.7GB        | Complete PyTorch inference environment     |
+| Build Time      | 8-15 minutes  | CodeBuild remote build time                |
+| Endpoint Startup| 7-10 minutes  | Endpoint creation to InService time        |
+| Model Loading   | 3-8 minutes   | Model initialization and weight loading    |
+| Inference Speed | 30-60 seconds | Depends on steps and texture settings      |
+
+## 🔍 Troubleshooting
+
+### Common Issues
+
+1. **Inference Error**
+
+   ```
+   zero-size array to reduction operation minimum which has no identity
+   ```
+
+   **Solution**: Check input image format, ensure reasonable image dimensions (recommended ≥ 256x256)
+
+2. **Model Loading Timeout**
+
+   ```
+   Model loading timeout, retried 60 times
+   ```
+
+   **Solution**: Check instance resources, model loading typically takes 5-10 minutes
+
+3. **OpenGL Error**
+
+   ```
+   libOpenGL.so.0: cannot open shared object file
+   ```
+
+   **Solution**: Ensure complete OpenGL dependency packages are installed
+
+4. **Endpoint Configuration Error**
+   ```
+   Could not find endpoint configuration
+   ```
+   **Solution**: Use the fixed `build_and_deploy.py` for automatic handling
+
+### Debugging Tools
+
+**View Endpoint Logs**:
+
+```bash
+aws logs get-log-events \
+  --log-group-name /aws/sagemaker/Endpoints/hunyuan3d-custom-endpoint \
+  --log-stream-name "AllTraffic/i-xxxxx"
+```
+
+**Check Endpoint Status**:
+
+```bash
+aws sagemaker describe-endpoint --endpoint-name hunyuan3d-custom-endpoint
+```
+
+## 📋 API Reference
+
+### Input Format
+
+```json
+{
+    "image": "base64_encoded_png_or_jpg",
+    "texture": boolean,
+    "num_inference_steps": integer,
+    "seed": integer,
+    "guidance_scale": float,
+    "face_count": integer
+}
+```
+
+### Output Format
+
+```json
+{
+  "status": "completed",
+  "model_base64": "base64_encoded_glb_file"
+}
+```
+
+## 🎨 Usage Examples
+
+### Generate Basic 3D Model
+
+```python
+import boto3, json, base64
+from PIL import Image
+from io import BytesIO
+
+# Create test image
+img = Image.new('RGB', (256, 256), color=(255, 0, 0))
+buffer = BytesIO()
+img.save(buffer, format='PNG')
+img_b64 = base64.b64encode(buffer.getvalue()).decode()
+
+# Call inference
+runtime = boto3.client('sagemaker-runtime')
+response = runtime.invoke_endpoint(
+    EndpointName='hunyuan3d-custom-endpoint',
+    ContentType='application/json',
+    Body=json.dumps({
+        "image": img_b64,
+        "texture": False,
+        "num_inference_steps": 5
+    })
+)
+
+# Save result
+result = json.loads(response['Body'].read().decode())
+if result['status'] == 'completed':
+    model_data = base64.b64decode(result['model_base64'])
+    with open('output.glb', 'wb') as f:
+        f.write(model_data)
+```
+
 ## 🔧 Deployment Key Points
 
 ### 1. System Dependencies Configuration
@@ -136,219 +364,6 @@ def deploy_model(image_uri):
         update_endpoint(endpoint_name, config_name)
     else:
         create_endpoint(endpoint_name, config_name)
-```
-
-## 🚀 Quick Deployment
-
-### Prerequisites
-
-#### AWS Environment Configuration
-```bash
-# 1. Install AWS CLI
-curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-unzip awscliv2.zip
-sudo ./aws/install
-
-# 2. Configure AWS credentials
-aws configure
-# Enter Access Key ID, Secret Access Key, Region (recommend us-east-1)
-```
-
-#### Required AWS Permissions
-Ensure your AWS account has the following permissions:
-
-**SageMaker Permissions**:
-- `sagemaker:CreateModel`
-- `sagemaker:CreateEndpointConfig`
-- `sagemaker:CreateEndpoint`
-- `sagemaker:UpdateEndpoint`
-- `sagemaker:DescribeEndpoint`
-- `sagemaker:DeleteEndpoint`
-- `sagemaker:DeleteEndpointConfig`
-- `sagemaker:DeleteModel`
-
-**ECR Permissions**:
-- `ecr:GetAuthorizationToken`
-- `ecr:BatchCheckLayerAvailability`
-- `ecr:GetDownloadUrlForLayer`
-- `ecr:BatchGetImage`
-- `ecr:CreateRepository`
-- `ecr:PutImage`
-- `ecr:InitiateLayerUpload`
-- `ecr:UploadLayerPart`
-- `ecr:CompleteLayerUpload`
-
-**CodeBuild Permissions**:
-- `codebuild:CreateProject`
-- `codebuild:StartBuild`
-- `codebuild:BatchGetBuilds`
-- `codebuild:BatchGetProjects`
-- `codebuild:ListBuilds`
-- `codebuild:ListProjects`
-
-**IAM Permissions**:
-- `iam:GetRole`
-- `iam:PassRole` (for SageMaker execution role)
-
-**CloudWatch Logs Permissions**:
-- `logs:CreateLogGroup`
-- `logs:CreateLogStream`
-- `logs:PutLogEvents`
-- `logs:DescribeLogGroups`
-- `logs:DescribeLogStreams`
-
-#### Resource Quota Requirements
-- **GPU Instance Quota**: Ensure `ml.g5.2xlarge` instance quota ≥ 1
-- **Storage Space**: At least 20GB available space for Docker image building
-- **Network**: Stable network connection for downloading model weights (~10GB)
-
-#### SageMaker Execution Role
-Create or ensure SageMaker execution role exists:
-```bash
-# Check existing role
-aws iam get-role --role-name SageMakerExecutionRole
-
-# If not exists, script will create automatically
-```
-
-### 1. Environment Setup
-
-```bash
-# Create virtual environment
-python3 -m venv hunyuan3d-env
-source hunyuan3d-env/bin/activate
-
-# Install dependencies
-pip install boto3 sagemaker pillow
-```
-
-### 2. One-Click Deployment
-
-```bash
-python build_and_deploy.py
-```
-
-### 3. Functionality Testing
-
-```bash
-# Quick functionality test
-python test_endpoint.py
-
-# Generate basic 3D shape
-python generate_3d_shape.py
-
-# Generate textured 3D model
-python generate_textured_3d.py
-```
-
-## 📊 Performance Metrics
-
-| Configuration   | Specification | Description                                |
-| --------------- | ------------- | ------------------------------------------ |
-| Instance Type   | ml.g5.2xlarge | 24GB GPU memory, suitable for large models |
-| Model Size      | ~9.7GB        | Complete PyTorch inference environment     |
-| Loading Time    | 5-10 minutes  | Large model initialization time            |
-| Inference Speed | 30-60 seconds | Depends on steps and texture settings      |
-
-## 🔍 Troubleshooting
-
-### Common Issues
-
-1. **OpenGL Error**
-
-   ```
-   libOpenGL.so.0: cannot open shared object file
-   ```
-
-   **Solution**: Ensure complete OpenGL dependency packages are installed
-
-2. **Model Loading Failure**
-
-   ```
-   'ModelHandler' object has no attribute 'load_model'
-   ```
-
-   **Solution**: Check method name, should be `load_models()`
-
-3. **Endpoint Configuration Error**
-   ```
-   Could not find endpoint configuration
-   ```
-   **Solution**: Use the fixed `build_and_deploy.py` for automatic handling
-
-### Debugging Tools
-
-**View Endpoint Logs**:
-
-```bash
-aws logs get-log-events \
-  --log-group-name /aws/sagemaker/Endpoints/hunyuan3d-custom-endpoint \
-  --log-stream-name "AllTraffic/i-xxxxx"
-```
-
-**Check Endpoint Status**:
-
-```bash
-aws sagemaker describe-endpoint --endpoint-name hunyuan3d-custom-endpoint
-```
-
-## 📋 API Reference
-
-### Input Format
-
-```json
-{
-    "image": "base64_encoded_png_or_jpg",
-    "texture": boolean,
-    "num_inference_steps": integer,
-    "seed": integer,
-    "guidance_scale": float,
-    "face_count": integer
-}
-```
-
-### Output Format
-
-```json
-{
-  "status": "completed",
-  "model_base64": "base64_encoded_glb_file"
-}
-```
-
-## 🎨 Usage Examples
-
-### Generate Basic 3D Model
-
-```python
-import boto3, json, base64
-from PIL import Image
-from io import BytesIO
-
-# Create test image
-img = Image.new('RGB', (256, 256), color=(255, 0, 0))
-buffer = BytesIO()
-img.save(buffer, format='PNG')
-img_b64 = base64.b64encode(buffer.getvalue()).decode()
-
-# Call inference
-runtime = boto3.client('sagemaker-runtime')
-response = runtime.invoke_endpoint(
-    EndpointName='hunyuan3d-custom-endpoint',
-    ContentType='application/json',
-    Body=json.dumps({
-        "image": img_b64,
-        "texture": False,
-        "num_inference_steps": 5
-    })
-)
-
-# Save result
-result = json.loads(response['Body'].read().decode())
-if result['status'] == 'completed':
-    model_data = base64.b64decode(result['model_base64'])
-    with open('output.glb', 'wb') as f:
-        f.write(model_data)
 ```
 
 ## 📚 Technical Details
