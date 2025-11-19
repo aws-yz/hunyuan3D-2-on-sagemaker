@@ -12,6 +12,19 @@ import zipfile
 import os
 import tempfile
 
+def format_duration(seconds):
+    """格式化时间显示"""
+    if seconds < 60:
+        return f"{seconds:.1f}秒"
+    elif seconds < 3600:
+        minutes = seconds // 60
+        secs = seconds % 60
+        return f"{int(minutes)}分{secs:.0f}秒"
+    else:
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        return f"{int(hours)}小时{int(minutes)}分钟"
+
 def create_source_bundle():
     """创建源代码包上传到S3"""
     print("📦 创建源代码包...")
@@ -224,6 +237,7 @@ def create_codebuild_project():
 def build_image_with_codebuild(project_name, bucket_name, s3_key):
     """使用CodeBuild构建镜像"""
     print("🔨 启动CodeBuild构建...")
+    build_start_time = time.time()
     
     codebuild = boto3.client('codebuild')
     account_id = boto3.client('sts').get_caller_identity()['Account']
@@ -257,32 +271,40 @@ def build_image_with_codebuild(project_name, bucket_name, s3_key):
             status = build_info['buildStatus']
             
             if status == 'SUCCEEDED':
-                print("✅ 构建成功完成！")
+                build_duration = time.time() - build_start_time
+                print(f"✅ 构建成功完成！耗时: {format_duration(build_duration)}")
                 image_uri = f"{account_id}.dkr.ecr.{region}.amazonaws.com/{repository_name}:latest"
-                return image_uri
+                return image_uri, build_duration
             elif status == 'FAILED':
-                print("❌ 构建失败")
+                build_duration = time.time() - build_start_time
+                print(f"❌ 构建失败，耗时: {format_duration(build_duration)}")
                 print(f"失败原因: {build_info.get('statusDetail', 'Unknown')}")
-                return None
+                return None, build_duration
             elif status in ['FAULT', 'STOPPED', 'TIMED_OUT']:
-                print(f"❌ 构建异常终止: {status}")
-                return None
+                build_duration = time.time() - build_start_time
+                print(f"❌ 构建异常终止: {status}，耗时: {format_duration(build_duration)}")
+                return None, build_duration
             
             print(f"  构建状态: {status}")
             time.sleep(30)  # 等待30秒后再检查
             
     except Exception as e:
-        print(f"❌ 启动构建失败: {e}")
-        return None
+        build_duration = time.time() - build_start_time
+        print(f"❌ 启动构建失败: {e}，耗时: {format_duration(build_duration)}")
+        return None, build_duration
 
 def deploy_model(image_uri):
     """部署模型到SageMaker"""
     print("🚀 部署模型到SageMaker...")
+    deploy_start_time = time.time()
     
     role = sagemaker.get_execution_role()
     endpoint_name = 'hunyuan3d-custom-endpoint'
     
     # 1. 创建新模型
+    print("📋 创建SageMaker模型...")
+    model_create_start = time.time()
+    
     model_name = f'hunyuan3d-model-{int(time.time())}'
     model = Model(
         image_uri=image_uri,
@@ -294,13 +316,16 @@ def deploy_model(image_uri):
     
     # 实际创建模型到 SageMaker
     model.create()
-    print(f"✅ 创建新模型: {model_name}")
+    model_create_duration = time.time() - model_create_start
+    print(f"✅ 创建新模型: {model_name}，耗时: {format_duration(model_create_duration)}")
     
     # 2. 创建新端点配置
+    print("⚙️ 创建端点配置...")
+    config_create_start = time.time()
+    
     config_name = f'hunyuan3d-config-{int(time.time())}'
     sagemaker_client = boto3.client('sagemaker')
     
-    print(f"🔄 创建新端点配置: {config_name}")
     sagemaker_client.create_endpoint_config(
         EndpointConfigName=config_name,
         ProductionVariants=[
@@ -315,9 +340,12 @@ def deploy_model(image_uri):
             }
         ]
     )
-    print(f"✅ 端点配置已创建: {config_name}")
+    config_create_duration = time.time() - config_create_start
+    print(f"✅ 端点配置已创建: {config_name}，耗时: {format_duration(config_create_duration)}")
     
     # 3. 检查端点是否存在并决定更新或创建
+    endpoint_operation_start = time.time()
+    
     try:
         # 尝试获取端点信息
         endpoint_info = sagemaker_client.describe_endpoint(EndpointName=endpoint_name)
@@ -339,8 +367,16 @@ def deploy_model(image_uri):
                 WaiterConfig={'Delay': 30, 'MaxAttempts': 60}  # 最多等待30分钟
             )
             
-            print(f"✅ 端点已更新到新模型: {endpoint_name}")
-            return True
+            endpoint_operation_duration = time.time() - endpoint_operation_start
+            print(f"✅ 端点已更新到新模型: {endpoint_name}，耗时: {format_duration(endpoint_operation_duration)}")
+            
+            total_deploy_duration = time.time() - deploy_start_time
+            return True, {
+                'model_create': model_create_duration,
+                'config_create': config_create_duration,
+                'endpoint_update': endpoint_operation_duration,
+                'total_deploy': total_deploy_duration
+            }
             
         except Exception as update_e:
             print(f"⚠️ 端点更新失败: {update_e}")
@@ -364,8 +400,15 @@ def deploy_model(image_uri):
                 print("✅ 损坏的端点已删除")
                 
             except Exception as delete_e:
+                endpoint_operation_duration = time.time() - endpoint_operation_start
+                total_deploy_duration = time.time() - deploy_start_time
                 print(f"❌ 删除端点失败: {delete_e}")
-                return None
+                return None, {
+                    'model_create': model_create_duration,
+                    'config_create': config_create_duration,
+                    'endpoint_operation': endpoint_operation_duration,
+                    'total_deploy': total_deploy_duration
+                }
             
             # 创建新端点
             try:
@@ -382,12 +425,27 @@ def deploy_model(image_uri):
                     WaiterConfig={'Delay': 30, 'MaxAttempts': 60}
                 )
                 
-                print(f"✅ 新端点已创建: {endpoint_name}")
-                return True
+                endpoint_operation_duration = time.time() - endpoint_operation_start
+                total_deploy_duration = time.time() - deploy_start_time
+                print(f"✅ 新端点已创建: {endpoint_name}，耗时: {format_duration(endpoint_operation_duration)}")
+                
+                return True, {
+                    'model_create': model_create_duration,
+                    'config_create': config_create_duration,
+                    'endpoint_create': endpoint_operation_duration,
+                    'total_deploy': total_deploy_duration
+                }
                 
             except Exception as create_e:
+                endpoint_operation_duration = time.time() - endpoint_operation_start
+                total_deploy_duration = time.time() - deploy_start_time
                 print(f"❌ 创建新端点失败: {create_e}")
-                return None
+                return None, {
+                    'model_create': model_create_duration,
+                    'config_create': config_create_duration,
+                    'endpoint_operation': endpoint_operation_duration,
+                    'total_deploy': total_deploy_duration
+                }
         
     except sagemaker_client.exceptions.ClientError as e:
         if e.response['Error']['Code'] == 'ValidationException' and 'does not exist' in str(e):
@@ -407,23 +465,53 @@ def deploy_model(image_uri):
                     WaiterConfig={'Delay': 30, 'MaxAttempts': 60}
                 )
                 
-                print(f"✅ 新端点已创建: {endpoint_name}")
-                return True
+                endpoint_operation_duration = time.time() - endpoint_operation_start
+                total_deploy_duration = time.time() - deploy_start_time
+                print(f"✅ 新端点已创建: {endpoint_name}，耗时: {format_duration(endpoint_operation_duration)}")
+                
+                return True, {
+                    'model_create': model_create_duration,
+                    'config_create': config_create_duration,
+                    'endpoint_create': endpoint_operation_duration,
+                    'total_deploy': total_deploy_duration
+                }
                 
             except Exception as deploy_e:
+                endpoint_operation_duration = time.time() - endpoint_operation_start
+                total_deploy_duration = time.time() - deploy_start_time
                 print(f"❌ 创建端点失败: {deploy_e}")
-                return None
+                return None, {
+                    'model_create': model_create_duration,
+                    'config_create': config_create_duration,
+                    'endpoint_operation': endpoint_operation_duration,
+                    'total_deploy': total_deploy_duration
+                }
         else:
+            endpoint_operation_duration = time.time() - endpoint_operation_start
+            total_deploy_duration = time.time() - deploy_start_time
             print(f"❌ 检查端点状态失败: {e}")
-            return None
+            return None, {
+                'model_create': model_create_duration,
+                'config_create': config_create_duration,
+                'endpoint_operation': endpoint_operation_duration,
+                'total_deploy': total_deploy_duration
+            }
     
     except Exception as e:
+        endpoint_operation_duration = time.time() - endpoint_operation_start
+        total_deploy_duration = time.time() - deploy_start_time
         print(f"❌ 部署过程出错: {e}")
-        return None
+        return None, {
+            'model_create': model_create_duration,
+            'config_create': config_create_duration,
+            'endpoint_operation': endpoint_operation_duration,
+            'total_deploy': total_deploy_duration
+        }
 
 def test_endpoint(endpoint_name):
     """测试端点"""
     print("🧪 测试端点...")
+    test_start_time = time.time()
     
     try:
         runtime = boto3.client('sagemaker-runtime', region_name='us-east-1')
@@ -440,20 +528,24 @@ def test_endpoint(endpoint_name):
             Body=json.dumps(test_data)
         )
         
+        test_duration = time.time() - test_start_time
+        
         if response['ResponseMetadata']['HTTPStatusCode'] == 200:
-            print("✅ 端点测试成功！")
-            return True
+            print(f"✅ 端点测试成功！耗时: {format_duration(test_duration)}")
+            return True, test_duration
         else:
-            print(f"❌ 端点测试失败: {response}")
-            return False
+            print(f"❌ 端点测试失败: {response}，耗时: {format_duration(test_duration)}")
+            return False, test_duration
             
     except Exception as e:
-        print(f"❌ 端点测试失败: {e}")
-        return False
+        test_duration = time.time() - test_start_time
+        print(f"❌ 端点测试失败: {e}，耗时: {format_duration(test_duration)}")
+        return False, test_duration
 
 def main():
     """主函数"""
     print("🚀 使用CodeBuild远程构建Hunyuan3D-2容器（x86架构）...")
+    total_start_time = time.time()
     
     # 1. 创建源代码包
     source_info = create_source_bundle()
@@ -470,28 +562,51 @@ def main():
         return
     
     # 3. 使用CodeBuild构建镜像
-    image_uri = build_image_with_codebuild(project_name, bucket_name, s3_key)
-    if not image_uri:
+    build_result = build_image_with_codebuild(project_name, bucket_name, s3_key)
+    if not build_result[0]:
         print("❌ 镜像构建失败")
         return
     
+    image_uri, build_duration = build_result
+    
     # 4. 部署模型
-    predictor = deploy_model(image_uri)
-    if not predictor:
+    deploy_result = deploy_model(image_uri)
+    if not deploy_result[0]:
         print("❌ 模型部署失败")
         return
     
+    deploy_success, deploy_timings = deploy_result
+    
     # 5. 测试端点
     endpoint_name = 'hunyuan3d-custom-endpoint'
-    test_success = test_endpoint(endpoint_name)
+    test_result = test_endpoint(endpoint_name)
+    test_success, test_duration = test_result
     
-    # 6. 输出结果
+    # 6. 输出结果和时间统计
+    total_duration = time.time() - total_start_time
+    
     print("\n" + "="*60)
+    print("⏱️  时间统计报告")
+    print("="*60)
+    print(f"🔨 Docker镜像构建:     {format_duration(build_duration)}")
+    print(f"📋 SageMaker模型创建:  {format_duration(deploy_timings['model_create'])}")
+    print(f"⚙️  端点配置创建:       {format_duration(deploy_timings['config_create'])}")
+    
+    if 'endpoint_update' in deploy_timings:
+        print(f"🔄 端点更新:           {format_duration(deploy_timings['endpoint_update'])}")
+    elif 'endpoint_create' in deploy_timings:
+        print(f"🆕 端点创建:           {format_duration(deploy_timings['endpoint_create'])}")
+    
+    print(f"🧪 端点测试:           {format_duration(test_duration)}")
+    print(f"📊 SageMaker部署总计:  {format_duration(deploy_timings['total_deploy'])}")
+    print(f"🎯 整体部署总计:       {format_duration(total_duration)}")
+    print("="*60)
+    
     if test_success:
         print("✅ 远程构建和部署完全成功!")
         print(f"📍 端点名称: {endpoint_name}")
         print(f"🐳 镜像URI: {image_uri}")
-        print(f"💻 实例类型: ml.g5.2xlarge (32GB GPU)")
+        print(f"💻 实例类型: ml.g5.2xlarge (24GB GPU)")
         print(f"🏗️ 构建方式: CodeBuild (x86架构)")
         print("💡 使用AWS DLC基础镜像，兼容性更好！")
     else:
