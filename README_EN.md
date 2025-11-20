@@ -8,8 +8,6 @@ This project implements the deployment of Tencent's Hunyuan3D-2 model on Amazon 
 
 ## 🎯 Core Features
 
-- **GLB Format Output**: Compatible with mainstream 3D viewers and editors
-- **OpenGL Compatibility Fix**: Resolve PyMeshLab library dependency issues
 - **SageMaker Integration**: Fully compatible with SageMaker inference services
 - **Asynchronous Loading**: Background model loading without blocking service startup
 
