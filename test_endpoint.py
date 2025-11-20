@@ -62,7 +62,6 @@ def test_endpoint():
             if 'model_base64' in result:
                 model_size = len(result['model_base64'])
                 print(f"📦 生成的3D模型数据大小: {model_size} 字符")
-                print("✅ PLY格式修复功能已激活并正常工作!")
             else:
                 print("⚠️ 响应中缺少模型数据")
         elif result.get('status') == 'loading':
