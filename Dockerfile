@@ -20,14 +20,14 @@ RUN apt-get update && apt-get install -y \
     libx11-6 \
     && rm -rf /var/lib/apt/lists/*
 
-# 克隆代码到/app目录 - 与HyperPod保持一致
+# 克隆代码到/app目录
 WORKDIR /app
 RUN git clone https://github.com/Tencent-Hunyuan/Hunyuan3D-2.git .
 
-# 安装依赖 - 使用HyperPod的精简方式
+# 安装依赖
 RUN pip3 install -r requirements.txt && pip3 install -e .
 
-# 编译扩展 - 使用HyperPod的相对路径方式
+# 编译扩展
 RUN cd hy3dgen/texgen/custom_rasterizer && python3 setup.py install
 RUN cd hy3dgen/texgen/differentiable_renderer && python3 setup.py install
 
