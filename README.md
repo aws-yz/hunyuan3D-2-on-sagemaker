@@ -8,8 +8,6 @@ _[English Version / 英文版本](README_EN.md)_
 
 ## 🎯 核心功能
 
-- **GLB 格式输出**：兼容主流 3D 查看器和编辑器
-- **OpenGL 兼容性修复**：解决 PyMeshLab 库依赖问题
 - **SageMaker 集成**：完全兼容 SageMaker 推理服务
 - **异步加载**：后台模型加载，不阻塞服务启动
 
